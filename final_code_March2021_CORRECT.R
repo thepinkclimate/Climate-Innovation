@@ -1,0 +1,203 @@
+rm(list=ls(all=TRUE)) # Removes all previously created variables
+gc() # frees up memory resources
+
+setwd("C:/Users/Larosa/Dropbox/FEEM_CMCC/Papers/Innovation4CC")
+library(bibliometrix)
+library(ggplot2)
+library(stats)
+library(utils)
+library(broom)
+library(plotly)
+library(stringr)
+library(stringi)
+library(dplyr)
+library(igraph)
+library(scales)
+library(qgraph)
+library(dplyr) #data manipulation
+library(gridExtra) #to view multiple plots together
+library(tidytext) #text mining
+library(topicmodels) #the LDA algorithm
+library(tidyr) #gather()
+library(dplyr) #awesome tools
+library(kableExtra) #create attractive tables
+library(knitr) #simple table generator
+library(ggrepel) #text and label geoms for ggplot2
+library(formattable) #color tile and color bar in `kables`
+library(tm) #text mining
+library(wordcloud)
+library(quanteda)
+library(tidyverse)
+library(RColorBrewer)
+library(stm)
+
+D <- c('scopus (2).bib', 'scopus (3).bib', 'scopus (4).bib',
+       'scopus (5).bib', 'scopus (6).bib', 'scopus (7).bib')
+M <- convert2df(D, dbsource = "scopus", format = "bibtex") #6018 articles
+newM <- duplicatedMatching(M, Field = "TI", tol = 0.95) #5556 vs initial 8355 
+newM <- newM %>%
+  mutate(decade =
+           ifelse(newM$PY %in% 1979:1989, "AR1",
+                  ifelse(newM$PY %in% 1990:1994, "AR2",
+                         ifelse(newM$PY %in% 1995:2000, "AR3",
+                                ifelse(newM$PY %in% 2001:2006, "AR4",
+                                       ifelse(newM$PY %in% 2007:2013, "AR5",
+                                              ifelse(newM$PY %in% 2014:2018, "SR1.5",
+                                                     ifelse(newM$PY %in% 2019:2021, "AR6",
+                                                            "NA"))))))))
+set.seed(23456)
+fix.contractions <- function(doc) {
+  # "won't" is a special case as it does not expand to "wo not"
+  doc <- gsub("won't", "will not", doc)
+  doc <- gsub("can't", "can not", doc)
+  doc <- gsub("n't", " not", doc)
+  doc <- gsub("'ll", " will", doc)
+  doc <- gsub("'re", " are", doc)
+  doc <- gsub("'ve", " have", doc)
+  doc <- gsub("'m", " am", doc)
+  doc <- gsub("'d", " would", doc)
+  doc <- gsub("decision making", "decisionmaking", doc)
+  doc <- gsub("decision makers", "decisionmakers", doc)
+  # 's could be 'is' or could be possessive: it has no expansion
+  doc <- gsub("'s", "", doc)
+  return(doc)
+}
+
+newM$AB <- sapply(newM$AB, fix.contractions)
+# Delete special characters
+removeSpecialChars <- function(x) gsub("[^a-zA-Z0-9 ]", " ", x)
+newM$AB <- sapply(newM$AB, removeSpecialChars)
+#convert everything to lowercase
+newM$AB <- sapply(newM$AB, tolower) 
+str(newM$AB, nchar.max = 300)
+removenum <- function(x) gsub("[0-9]+|[[:punct:]]|\\(.*\\)", " ", x)
+newM$AB<- sapply(newM$AB, removenum)
+
+
+## Create corpus and add relevant variables
+Corpus <- corpus(newM$AB)
+docvars(Corpus, field = "Year") <- as.integer(newM$PY)
+docvars(Corpus, field = "AR") <- as.character(newM$decade)
+
+stops <- c(
+  tm::stopwords("english"),
+  tm::stopwords("SMART"),
+  "climate", "change", "are", "will", "this", "has", "new", "paper", "can", "also", "its", "iop", "journal",
+  "springer", "author", "article", "articles") %>%
+  gofastr::prep_stopwords() 
+
+dfm <- dfm(Corpus,
+           remove = c(stopwords("english"), stops),
+           stem = F)
+vdfm <- dfm_trim(dfm, min_termfreq = 6) 
+#min_count removes words used less than x and min_docfreq removes words used in less than x docs
+topfeatures(vdfm, n = 50) # these are the top 50 words
+
+#To get a feeling about how words are clustered, I build a dendogram with the first 50 words
+numWords <- 50
+wordDfm <- dfm_sort(dfm_weight(vdfm, dfm_tfidf(vdfm)))
+wordDfm <- t(wordDfm)[1:numWords,]  # keep the top numWords words
+wordDistMat <- dist(wordDfm)
+wordCluster <- hclust(wordDistMat)
+plot(wordCluster, xlab="", main="TF-IDF Frequency weighting (First 50 Words)")
+
+## LDA.
+#Find the optimal number of topics first
+#Identify the optimal number of topics, given we do not know them in advance
+storage1<-searchK(docs, vocab, K = c(10,15,20, 25, 30, 35, 40), 
+                  data=meta, set.seed(23456), verbose=FALSE)
+plot(storage1)
+storage2<-searchK(docs, vocab, K = c(26,27,28,29,30,31,32,33,34,35), 
+                  data=meta, set.seed(23456), verbose=FALSE)
+## I think a good number could be 33
+
+# use quanteda converter to convert our Dfm and then stm package because it has features to reduce sparce terms
+stmdfm <- convert(dfm, to = "stm", docvars = docvars(Corpus))
+plotRemoved(stmdfm$documents, lower.thresh = seq(1, 100, by = 10))
+out <- prepDocuments(stmdfm$documents, stmdfm$vocab, stmdfm$meta, lower.thresh = 20)
+docs <- out$documents
+vocab <- out$vocab
+meta <- out$meta
+
+stmfit2<-stm(out$documents,out$vocab,K=34,
+             prevalence = ~AR,
+             data=out$meta,seed=24601, 
+             init.type = "Spectral")
+labelTopics(stmfit2)
+plot.STM(stmfit2,type="summary",xlim=c(0,0.15))
+topicQuality(stmfit2,documents=out$documents)
+topicNames <- labelTopics(stmfit2, n = 34)
+topic <- data.frame(
+  TopicNumber = 1:34,
+  TopicProportions = colMeans(stmfit2$theta))
+
+k <- 34
+prep <- estimateEffect(1:k ~ AR + s(Year), stmfit2, meta = out$meta, uncertainty = "Global")
+
+stm1effect<-estimateEffect(formula=1:34 ~ Year,
+                           stmobj=stmfit2,metadata=meta)
+topic.count = 33
+model.stm.labels <- labelTopics(stmfit2, 1:topic.count)
+par(mfrow=c(3,3))
+for (i in seq_along(sample(1:topic.count, size = 9))) {
+  plot(stm1effect, "Year", method = "continuous", topics = i, 
+       main = paste0(model.stm.labels$prob[i,1:3], collapse = ", "), linecol = "slategrey", printlegend = F)
+}
+
+#Topic prevalence in documents
+plot(stmfit2, type = "hist", topics = sample(1:topic.count, size = 33))
+
+#Using this approach, I can see topic by topic which are the frequent but most escludive (FREX) words
+plot(stmfit2, 
+     type = "labels", 
+     labeltype="frex",
+     n = 30, 
+     topics = 1, 
+     text.cex = 1.2, 
+     width = 50)
+
+plot(stmfit2, 
+     type = "perspectives", 
+     labeltype="prob",
+     n = 33, 
+     topics = c(17, 24), 
+     text.cex = 0.8)
+
+#I extract the documents highly associated to topics
+
+thoughts <- findThoughts(stmfit2, texts = newM$AB, n = 2, topics = 1)
+
+library(igraph)
+library(visNetwork)
+mod.out.corr <- topicCorr(stmfit2, cutoff = .01)
+plot(mod.out.corr)
+
+#Extract nodes and edges
+links2 <- as.matrix(mod.out.corr$posadj)
+net2 <- graph_from_adjacency_matrix(links2, mode = "directed")
+net2 <- igraph::simplify(net2) 
+
+links <- igraph::as_data_frame(net2, what="edges")
+nodes <- igraph::as_data_frame(net2, what="vertices")
+
+nodes$shape <- "dot"  
+nodes$title <- paste0("Topic ", topic$TopicNumber)
+nodes$label <- apply(topicNames$prob, 1, function(x) paste0(x, collapse = " \n ")) # Node label. if you want to see all the words
+#Otherwise do not run 
+nodes$size <- (topic$TopicProportions / max(topic$TopicProportions)) * 30
+nodes$font <- "18px"
+nodes$id <- as.numeric(1:33)
+
+visNetwork(nodes, links, width="100%",  height="800px", main="Research Topics") %>% 
+  visOptions(highlightNearest = list(enabled = T, algorithm = "hierarchical")) %>%
+  visNodes(scaling = list(max = 10)) %>%
+  visIgraphLayout(layout ="layout_with_sugiyama", smooth = T) %>%
+  visInteraction(navigationButtons = T)
+
+visNetwork(nodes, links, width="100%",  height="800px", main="Research Topics") %>% 
+  visOptions(highlightNearest = list(enabled = T, algorithm = "hierarchical")) %>%
+  visNodes(scaling = list(max = 10)) %>%
+  visEdges(arrows = 'from') %>%
+  visIgraphLayout(physics = TRUE, smooth = T) %>%
+  visHierarchicalLayout(direction = "LR", levelSeparation = 20) %>%
+  visInteraction(navigationButtons = T)
