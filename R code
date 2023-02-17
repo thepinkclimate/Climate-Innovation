@@ -1,7 +1,7 @@
 rm(list=ls(all=TRUE)) # Removes all previously created variables
 gc() # frees up memory resources
 
-setwd("C:/Users/Larosa/Dropbox/FEEM_CMCC/Papers/Innovation4CC")
+setwd()
 library(bibliometrix)
 library(ggplot2)
 library(stats)
